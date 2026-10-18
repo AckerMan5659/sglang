@@ -37,7 +37,9 @@ def ep2_rank0(monkeypatch):
     )
     with (
         get_context().override_server_args(model_path="dummy", device="cpu"),
-        get_flags().moe.override(a2a_backend=MoeA2ABackend.NONE),
+        get_flags().moe.override(
+            a2a_backend=MoeA2ABackend.NONE, runner_backend=MoeRunnerBackend.AUTO
+        ),
         get_parallel().override(
             tp_size=2,
             tp_rank=0,

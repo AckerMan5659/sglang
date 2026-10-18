@@ -22,6 +22,7 @@ from sglang.kernels.ops.muse_spark.fused_post_expert_norm_weighted_sum_triton im
 from sglang.kernels.ops.muse_spark.fused_post_expert_norm_weighted_sum_trtllm import (
     FusedPostExpertNormWeightedSumTRTLLM,
 )
+from sglang.srt.layers.moe import MoeRunnerBackend
 from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
 from sglang.srt.layers.muse_spark.muse_spark_fp4_moe import (
     finalize_with_post_expert_norm,
@@ -110,6 +111,7 @@ class MuseSpark1xBf16Experts(nn.Module):
         self.moe_runner_config = MoeRunnerConfig(
             num_experts=num_experts,
             num_local_experts=num_local_experts,
+            runner_backend=MoeRunnerBackend.FLASHINFER_TRTLLM,
             hidden_size=expert_hidden_size,
             intermediate_size_per_partition=intermediate_size,
             top_k=top_k,
