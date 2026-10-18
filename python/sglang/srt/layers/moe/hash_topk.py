@@ -21,9 +21,10 @@ from sglang.srt.layers.moe.topk import (
     _mask_topk_ids_padded_region,
     _zero_topk_weights_padded_region,
     remap_topk_for_per_rank_shared_slots,
+    resolve_routing_inputs,
 )
 from sglang.srt.layers.moe.utils import has_per_rank_fused_shared_slots
-from sglang.srt.runtime_context import get_exec
+from sglang.srt.runtime_context import get_exec, get_flags
 from sglang.srt.utils import is_hip, is_npu, is_xpu
 
 logger = logging.getLogger(__name__)
@@ -44,9 +45,13 @@ class HashTopK(nn.Module):
         routed_scaling_factor=1.5,
         apply_routed_scaling_factor_on_output=False,
         layer_id: Optional[int] = None,
+        is_draft: Optional[bool] = None,
     ):
         super().__init__()
         self.layer_id = layer_id
+        self.is_draft = (
+            get_flags().moe.in_speculative_scope if is_draft is None else is_draft
+        )
 
         self.enable_waterfill = (
             num_fused_shared_experts > 0 and get_exec().moe.enable_waterfill
@@ -78,6 +83,9 @@ class HashTopK(nn.Module):
                 "with fused shared experts; pass --disable-shared-experts-fusion."
             )
 
+    def routing_inputs(self):
+        return resolve_routing_inputs(layer_id=self.layer_id, is_draft=self.is_draft)
+
     def _init_default_tid2eid(self) -> None:
         topk = self.tid2eid.shape[1]
         if topk == 0:
@@ -99,7 +107,8 @@ class HashTopK(nn.Module):
         self, device: torch.device, *, layer_id: Optional[int] = None
     ):
         topk = self.topk - self.num_fused_shared_experts
-        if layer_id is not None:
+        if not self.is_draft:
+            layer_id = self.layer_id
             from sglang.srt.eplb.lplb_solver import get_global_lplb_solver
 
             lplb_solver = get_global_lplb_solver(layer_id)
@@ -225,6 +234,12 @@ class HashTopK(nn.Module):
         num_token_non_padded: Optional[torch.Tensor] = None,
         expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
     ):
+        num_token_non_padded, expert_location_dispatch_info = resolve_routing_inputs(
+            layer_id=self.layer_id,
+            is_draft=self.is_draft,
+            num_token_non_padded=num_token_non_padded,
+            expert_location_dispatch_info=expert_location_dispatch_info,
+        )
         assert input_ids.shape[0] == hidden_states.shape[0] == router_logits.shape[0], (
             f"{input_ids.shape=} {hidden_states.shape=} {router_logits.shape=}"
         )
