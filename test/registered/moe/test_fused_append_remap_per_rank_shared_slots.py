@@ -14,6 +14,7 @@ import torch
 from sglang.kernels.ops.moe.fused_moe_triton_kernels import (
     fused_append_remap_shared_experts_deepep,
 )
+from sglang.srt.configs.shared_experts import SharedExpertsConfig
 from sglang.srt.layers.moe import topk as topk_module
 from sglang.srt.layers.moe.topk import (
     TopKConfig,
@@ -213,7 +214,9 @@ class TestFusedAppendRemapPerRankSharedSlots(CustomTestCase):
                         npr,
                         TopKConfig(
                             top_k=k,
-                            num_shared_topk_slots=s,
+                            shared_experts=SharedExpertsConfig(
+                                num_fused_shared_experts=s
+                            ),
                             routed_scaling_factor=rsf,
                         ),
                     )
@@ -319,7 +322,9 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
             use_grouped_topk=num_expert_group is not None,
             num_expert_group=num_expert_group,
             topk_group=topk_group,
-            num_shared_topk_slots=num_fused_shared_experts,
+            shared_experts=SharedExpertsConfig(
+                num_fused_shared_experts=num_fused_shared_experts
+            ),
             correction_bias=bias,
             scoring_func=scoring_func,
             routed_scaling_factor=2.5,

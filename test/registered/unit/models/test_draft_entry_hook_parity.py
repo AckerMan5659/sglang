@@ -1,7 +1,7 @@
 """A draft entry class answers the loader's questions exactly when its target does.
 
 The loader asks the *entry class* it instantiates for the shared-experts-fusion
-decision (`install_shared_experts_fusion_decision`). A draft is its own entry
+decision (`resolve_shared_experts_config`). A draft is its own entry
 class -- `...NextN`, `...MTP`, `...DSpark`, `...Eagle3` -- so when the target
 family carries auto-disable conditions and the draft's class does not expose
 them, the draft resolves a *different* decision than the target it drafts for,

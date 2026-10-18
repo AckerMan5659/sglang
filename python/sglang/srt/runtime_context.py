@@ -557,21 +557,7 @@ class MoeFlags(_FlagGroupBase):
     tbo_token_distribution_threshold: float | None = None
     disable_fp4_allgather: bool | None = None
     quantization: str | None = None
-    # The shared-experts-fusion decision and the number of shared experts it
-    # fuses into the experts layer, per runner — the runner_backend /
-    # speculative_runner_backend shape. The decision leaves are seeded from the
-    # config intent by ``initialize_moe_config``; the loader installs both ACTIVE
-    # leaves before each model's layers build and read them
-    # (``install_shared_experts_fusion_decision``). ``draft_model_build_scope``
-    # brackets a draft's build: the draft's values also land on the speculative
-    # leaves (inspectable afterwards) and the target's ACTIVE values return.
-    disable_shared_experts_fusion: bool | None = None
-    speculative_disable_shared_experts_fusion: bool | None = None
-    num_fused_shared_experts: int | None = None
-    speculative_num_fused_shared_experts: int | None = None
-    # Lifecycle marker (the capture.disable_dispose_tensor family): set while
-    # speculative_moe_backend_context is active, so a draft gate's write also
-    # lands on the speculative leaf.
+    # True while draft construction/backend scopes are active.
     in_speculative_scope: bool = False
     # Draft construction/execution uses a separate one-sided A2A workspace from
     # the target model's concurrently live CUDA graphs.

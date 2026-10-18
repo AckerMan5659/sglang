@@ -38,10 +38,12 @@ import triton.language as tl
 if TYPE_CHECKING:
     from triton_kernels.tensor_details.ragged_tensor import RaggedTensorMetadata
 
+from sglang.srt.configs.shared_experts import SharedExpertsConfig
 from sglang.srt.runtime_context import (
     get_exec,
     get_forward,
     get_lora,
+    get_model,
     get_parallel,
     get_server_args,
 )
@@ -106,8 +108,6 @@ from sglang.srt.layers.moe import (
 )
 from sglang.srt.layers.moe.utils import (
     has_per_rank_fused_shared_slots,
-    shared_topk_slots,
-    waterfill_routes_shared_experts,
 )
 from sglang.srt.state_capturer.routed_experts import get_global_experts_capturer
 from sglang.srt.utils import (
@@ -258,9 +258,7 @@ class TopKConfig:
     topk_group: Optional[int] = None
     num_expert_group: Optional[int] = None
     renormalize: bool = True
-    # Trailing columns of top_k that the router fills with fused shared experts.
-    # Zero when Waterfill appends the shared expert after routing.
-    num_shared_topk_slots: int = 0
+    shared_experts: SharedExpertsConfig = SharedExpertsConfig()
     custom_routing_function: Optional[Callable] = None
     correction_bias: Optional[torch.Tensor] = None
     torch_native: bool = False
@@ -282,6 +280,10 @@ class TopKConfig:
     _correction_bias_cache_key: Optional[Tuple] = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    @property
+    def num_shared_topk_slots(self) -> int:
+        return self.shared_experts.num_shared_topk_slots
 
     def correction_bias_for_dtype(self, dtype: torch.dtype) -> Optional[torch.Tensor]:
         """Return correction bias in ``dtype``, reusing a per-TopK lazy copy."""
@@ -628,9 +630,10 @@ class TopK(BaseFusedOp):
 
         self.layer_id = layer_id
 
-        self.enable_waterfill = waterfill_routes_shared_experts()
+        shared_experts = get_model().shared_experts
+        self.enable_waterfill = shared_experts.use_waterfill
         self.waterfill_balancer = None
-        num_shared_slots = shared_topk_slots()
+        num_shared_slots = shared_experts.num_shared_topk_slots
 
         # Under the flashinfer_mxfp4 backend, fp4-expert ckpts take STANDARD
         # (consumes topk_ids/weights); otherwise BYPASSED. No-op on other backends.
@@ -641,7 +644,7 @@ class TopK(BaseFusedOp):
             renormalize=renormalize,
             topk_group=topk_group,
             num_expert_group=num_expert_group,
-            num_shared_topk_slots=num_shared_slots,
+            shared_experts=shared_experts,
             custom_routing_function=custom_routing_function,
             correction_bias=correction_bias,
             routed_scaling_factor=routed_scaling_factor,

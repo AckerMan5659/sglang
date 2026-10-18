@@ -3313,7 +3313,7 @@ class DeepseekV2ForCausalLM(nn.Module, DeepseekV2WeightLoaderMixin):
         """Why this checkpoint cannot fuse its shared expert, or None.
 
         Evaluated by the loader once per runner, before any layer is built (see
-        ``install_shared_experts_fusion_decision``), so it takes the config and
+        ``resolve_shared_experts_config``), so it takes the config and
         quantization it is asked about rather than reading an instance.
         """
         # Need to disable if quant precision mismatch, even if
@@ -3383,7 +3383,7 @@ class DeepseekV2ForCausalLM(nn.Module, DeepseekV2WeightLoaderMixin):
     @classmethod
     def num_fusable_shared_experts(cls, hf_config) -> int:
         """Shared experts fused as routed slots when fusion is on (see
-        ``install_shared_experts_fusion_decision``)."""
+        ``resolve_shared_experts_config``)."""
         return hf_config.n_shared_experts or 0
 
     def get_input_embeddings(self) -> nn.Embedding:

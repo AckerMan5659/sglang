@@ -1,6 +1,6 @@
 """Every MoE family's fusion gate, asked the way the loader asks it.
 
-`install_shared_experts_fusion_decision` calls
+`resolve_shared_experts_config` calls
 `<model class>.shared_experts_fusion_disable_reason(hf_config, quant_config)`
 before the model is built, so the gate must answer from the config and
 quantization it is handed — no instance, no layers. These cases pin each

@@ -6,15 +6,22 @@ import torch
 from torch import nn
 
 from sglang.srt.configs.deepseek_v4 import DeepSeekV4Config
+from sglang.srt.configs.shared_experts import SharedExpertsConfig
 from sglang.srt.layers.moe import MoeA2ABackend
 from sglang.srt.layers.moe.utils import (
-    install_shared_experts_fusion_decision,
     is_shared_experts_fusion_disabled,
+    resolve_shared_experts_config,
 )
 from sglang.srt.models import deepseek_v4
 from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
 from sglang.srt.models.deepseek_v4_dspark import DeepseekV4ForCausalLMDSpark
-from sglang.srt.runtime_context import get_context, get_exec, get_flags, get_parallel
+from sglang.srt.runtime_context import (
+    get_context,
+    get_exec,
+    get_flags,
+    get_model,
+    get_parallel,
+)
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -26,7 +33,7 @@ class TestDeepseekV4SharedExpertFusionPolicy(CustomTestCase):
 
     The gate is a question the loader asks the model class before any layer
     exists (``shared_experts_fusion_disable_reason``); the answer is installed
-    on the ACTIVE moe flag, and the config bag keeps the user's intent.
+    in the model scope, and the exec bag keeps the user's intent.
     """
 
     def setUp(self):
@@ -41,19 +48,17 @@ class TestDeepseekV4SharedExpertFusionPolicy(CustomTestCase):
         )
         override.install()
         self.addCleanup(override.restore)
-        moe = get_flags().moe
-        moe.disable_shared_experts_fusion = None
-        moe.num_fused_shared_experts = None
-        self.addCleanup(lambda: setattr(moe, "disable_shared_experts_fusion", None))
-        # A fused count left behind would reach TopKs built later in this process.
-        self.addCleanup(lambda: setattr(moe, "num_fused_shared_experts", None))
 
     def _install(self, model_class=DeepseekV4ForCausalLM, n_shared_experts=1):
-        install_shared_experts_fusion_decision(
+        config = resolve_shared_experts_config(
             model_class,
             SimpleNamespace(n_shared_experts=n_shared_experts),
             None,
         )
+
+        scope = get_model().override(shared_experts=config)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
 
     def _make_dspark_config(self):
         return DeepSeekV4Config(
@@ -79,7 +84,7 @@ class TestDeepseekV4SharedExpertFusionPolicy(CustomTestCase):
             "Config does not support fused shared expert(s).",
         )
         self._install()
-        # The decision lands on the ACTIVE flag; the config intent is untouched.
+        # The resolved model decision leaves the startup intent untouched.
         self.assertTrue(is_shared_experts_fusion_disabled())
         self.assertFalse(get_exec().moe.disable_shared_experts_fusion)
 
@@ -88,6 +93,7 @@ class TestDeepseekV4SharedExpertFusionPolicy(CustomTestCase):
         with DP attention and CUDA MegaMoE. CP, PP and other A2A paths still lack
         vision routing support and must fail before constructing the tower.
         """
+        self._publish(enforce=False)
         config = DeepSeekV4Config(
             architectures=["DeepseekV4ForCausalLM"],
             model_type="deepseek_v41",
@@ -123,10 +129,12 @@ class TestDeepseekV4SharedExpertFusionPolicy(CustomTestCase):
                         attn_tp_size=2 // cp,
                         attn_cp_size=cp,
                         moe_ep_size=4,
+                        pp_size=pp,
                         pp_group=SimpleNamespace(world_size=pp, is_last_rank=True),
                     ),
-                    get_flags().moe.override(
-                        a2a_backend=backend, disable_shared_experts_fusion=True
+                    get_flags().moe.override(a2a_backend=backend),
+                    get_model().override(
+                        shared_experts=SharedExpertsConfig(fusion_disabled=True)
                     ),
                     patch.object(deepseek_v4, "_is_cuda", cuda),
                     patch.object(deepseek_v4, "ViT", return_value=nn.Identity()),
