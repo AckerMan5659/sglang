@@ -213,7 +213,7 @@ class TestFusedAppendRemapPerRankSharedSlots(CustomTestCase):
                         npr,
                         TopKConfig(
                             top_k=k,
-                            num_shared_expert_columns=s,
+                            num_shared_topk_slots=s,
                             routed_scaling_factor=rsf,
                         ),
                     )
@@ -319,7 +319,7 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
             use_grouped_topk=num_expert_group is not None,
             num_expert_group=num_expert_group,
             topk_group=topk_group,
-            num_shared_expert_columns=num_fused_shared_experts,
+            num_shared_topk_slots=num_fused_shared_experts,
             correction_bias=bias,
             scoring_func=scoring_func,
             routed_scaling_factor=2.5,

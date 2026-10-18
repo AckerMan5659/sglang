@@ -711,7 +711,7 @@ def waterfill_routes_shared_experts(num_fused_shared_experts: int) -> bool:
     return num_fused_shared_experts > 0 and get_exec().moe.enable_waterfill
 
 
-def topk_shared_expert_columns(num_fused_shared_experts: int) -> int:
+def shared_topk_slots(num_fused_shared_experts: int) -> int:
     """How many trailing top-k columns the router fills with fused shared experts.
 
     ``num_fused_shared_experts`` counts the shared experts the experts layer runs as
