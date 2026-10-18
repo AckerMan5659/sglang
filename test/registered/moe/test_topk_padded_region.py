@@ -301,7 +301,7 @@ class TestSelectExpertsPerRankSharedSlotPadMask(CustomTestCase):
                     use_grouped_topk=num_expert_group is not None,
                     num_expert_group=num_expert_group,
                     topk_group=4 if num_expert_group else None,
-                    num_fused_shared_experts=1,
+                    num_shared_expert_columns=1,
                     correction_bias=bias.to(self.DEVICE),
                     scoring_func=scoring_func,
                     routed_scaling_factor=2.5,

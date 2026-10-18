@@ -694,9 +694,13 @@ def uses_per_rank_fused_shared_slots() -> bool:
     return is_deepep_class_backend() or get_moe_a2a_backend().is_megamoe()
 
 
-def has_per_rank_fused_shared_slots(num_fused_shared_experts: int) -> bool:
-    """Check whether this layer has fused shared experts in per-rank slots."""
-    return num_fused_shared_experts > 0 and uses_per_rank_fused_shared_slots()
+def has_per_rank_fused_shared_slots(num_shared: int) -> bool:
+    """Whether ``num_shared`` fused shared experts sit in per-rank slots.
+
+    ``num_shared`` is either an experts layer's fused shared experts or the
+    shared-expert columns a top-k router writes for them; either way it answers
+    whether that many are nonzero and the a2a backend gives each rank its own slots."""
+    return num_shared > 0 and uses_per_rank_fused_shared_slots()
 
 
 def waterfill_routes_shared_experts(num_fused_shared_experts: int) -> bool:

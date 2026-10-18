@@ -108,7 +108,7 @@ class TestWaterfillEPLB(CustomTestCase):
         topk_weights = torch.ones_like(topk_ids, dtype=torch.float32)
         topk_config = TopKConfig(
             top_k=4,
-            num_fused_shared_experts=1,
+            num_shared_expert_columns=1,
             routed_scaling_factor=1.0,
         )
         dispatch_info = SimpleNamespace(
@@ -189,9 +189,12 @@ class TestWaterfillEPLB(CustomTestCase):
 
     def test_the_shared_expert_column_has_exactly_one_writer(self):
         """A fused shared expert's top-k column is written by the router, or appended
-        by Waterfill after routing; never both (the shared expert would run twice)
-        and never neither (it would be dropped). A layer without fused shared
-        experts gets no Waterfill even when Waterfill is enabled."""
+        by Waterfill after routing; never both and never neither. With both,
+        Waterfill would remap the router's shared column as a routed id
+        (``id + id // experts_per_rank``), sending it to a wrong or out-of-range
+        expert (256 experts on EP8: rank 7's slot 263 becomes 271); with neither,
+        the shared expert would be dropped. A layer without fused shared experts
+        gets no Waterfill even when Waterfill is enabled."""
         for enable_waterfill in (False, True):
             exec_config = SimpleNamespace(
                 moe=SimpleNamespace(enable_waterfill=enable_waterfill)

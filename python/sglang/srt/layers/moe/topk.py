@@ -164,7 +164,7 @@ def _use_rocm_triton_softmax_topk(
     gating_output: torch.Tensor,
     topk: int,
     correction_bias: Optional[torch.Tensor],
-    num_fused_shared_experts: int,
+    num_shared_expert_columns: int,
     packed_out: Optional[torch.Tensor],
 ) -> bool:
     """Use the lower-latency Triton router for Qwen3.5 decode-sized rows."""
@@ -178,7 +178,7 @@ def _use_rocm_triton_softmax_topk(
         and gating_output.dtype == torch.bfloat16
         and topk == 10
         and correction_bias is None
-        and num_fused_shared_experts == 0
+        and num_shared_expert_columns == 0
         and packed_out is None
     )
 
@@ -1723,7 +1723,7 @@ def _fused_gate_masks_padded_rows(scoring_func: str) -> bool:
 
 def _fused_gate_emits_packed_ids(
     scoring_func: str,
-    num_fused_shared_experts: int,
+    num_shared_expert_columns: int,
     expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo],
     routing_overridden: bool,
     enabled: bool,
@@ -1735,7 +1735,7 @@ def _fused_gate_emits_packed_ids(
         and _fused_gate_masks_padded_rows(scoring_func)
         and get_moe_runner_backend().is_flashinfer_mxfp4()
         and expert_location_dispatch_info is None
-        and num_fused_shared_experts == 0
+        and num_shared_expert_columns == 0
         and not routing_overridden
     )
 
