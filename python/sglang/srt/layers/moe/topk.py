@@ -198,7 +198,7 @@ if _is_cuda:
             scaling_factor: float,
             topk_weights: torch.Tensor,
             topk_ids: torch.Tensor,
-            renormalize: bool,
+            launch_with_pdl: bool,
         ) -> None:
             _fused_topk_deepseek(
                 gating_output,
@@ -209,7 +209,7 @@ if _is_cuda:
                 scaling_factor,
                 topk_weights,
                 topk_ids,
-                renormalize,
+                launch_with_pdl,
             )
 
     except ImportError:
@@ -1836,6 +1836,8 @@ def biased_grouped_topk_gpu(
     if (
         _is_cuda
         and fused_topk_deepseek is not None
+        # flashinfer always renormalizes the selected weights
+        and renormalize
         and is_power_of_two(num_experts)
         # flashinfer constraints (applied to routed experts only)
         and topk_routed <= 8
@@ -1871,21 +1873,21 @@ def biased_grouped_topk_gpu(
             scaling_factor,
             topk_weights,
             topk_ids,
-            True,
+            launch_with_pdl=True,
         )
 
         if num_fused_shared_experts > 0:
-            # Append shared expert columns: ID = num_experts (first shared slot),
-            # weight = sum(routed) / scaling_factor (matching biased_grouped_topk_impl).
-            # For DeepEP/MegaMOE per-rank shared-slot layout, post-process remaps
-            # this placeholder ID and overwrites the shared weight for the active scaling path.
+            # Append the global shared columns: ID = num_experts (first shared slot).
+            # On CUDA the routed weights carry the factor exactly when asked to.
             topk_ids = F.pad(topk_ids, (0, num_fused_shared_experts), value=num_experts)
-            topk_weights = F.pad(topk_weights, (0, num_fused_shared_experts))
-            if routed_scaling_factor is not None:
-                topk_weights[:, topk_routed:] = (
-                    topk_weights[:, :topk_routed].sum(dim=-1, keepdim=True)
-                    / routed_scaling_factor
-                )
+            topk_weights = F.pad(
+                topk_weights,
+                (0, num_fused_shared_experts),
+                value=fused_shared_expert_weight(
+                    routed_scaling_factor=routed_scaling_factor,
+                    fused_in_topk=bool(apply_routed_scaling_factor_on_output),
+                ),
+            )
 
         return topk_weights, topk_ids
 
@@ -2536,6 +2538,9 @@ def _post_process_topk_ids(
             num_physical_routed_experts,
             topk_config,
         )
+        if _is_cuda:
+            # The remap shifts a padded row's -1 and gives it a live shared slot.
+            _mask_topk_ids_padded_region(topk_ids, num_token_non_padded)
     elif (
         num_fused_shared_experts > 0 and fused_shared_experts_scaling_factor is not None
     ):
