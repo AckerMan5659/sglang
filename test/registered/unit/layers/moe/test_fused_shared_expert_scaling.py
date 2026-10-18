@@ -28,8 +28,8 @@ from unittest.mock import patch
 import torch
 
 from sglang.srt.batch_overlap.operations import _StateDict
-from sglang.srt.layers.moe import hash_topk as hash_topk_module
 from sglang.srt.layers.moe import topk as topk_module
+from sglang.srt.layers.moe import utils as moe_utils
 from sglang.srt.layers.moe.topk import TopK, TopKConfig
 from sglang.srt.layers.moe.utils import MoeA2ABackend
 from sglang.srt.model_executor.model_runner_components import moe_ep_setup
@@ -230,7 +230,8 @@ class TestFusedSharedExpertScaling(CustomTestCase):
             ),
             patch.object(module, "get_exec", return_value=exec_config),
             patch.object(topk_module, "get_exec", return_value=exec_config),
-            patch.object(hash_topk_module, "get_exec", return_value=exec_config),
+            # TopK and HashTopK ask layers/moe/utils.py whether Waterfill is on.
+            patch.object(moe_utils, "get_exec", return_value=exec_config),
             patch.object(
                 module, "is_shared_experts_fusion_disabled", return_value=True
             ),
