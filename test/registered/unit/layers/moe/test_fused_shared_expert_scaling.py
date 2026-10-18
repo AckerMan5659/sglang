@@ -198,10 +198,6 @@ class TestFusedSharedExpertScaling(CustomTestCase):
         fused_shared=0,
         ep_size=1,
     ):
-        override = get_context().override_server_args()
-        override.install()
-        self.addCleanup(override.restore)
-
         config = SimpleNamespace(
             routed_scaling_factor=self.ROUTED_SCALING_FACTOR,
             n_shared_experts=fused_shared or None,
@@ -228,6 +224,7 @@ class TestFusedSharedExpertScaling(CustomTestCase):
         )
         module = deepseek_v2_module
         with (
+            get_context().override_server_args(),
             patch.object(module, "_use_aiter", use_aiter),
             patch.object(topk_module, "_use_aiter", use_aiter),
             patch.object(
