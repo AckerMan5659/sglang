@@ -26,6 +26,7 @@ import torch
 
 from sglang.srt.layers.moe import topk as topk_module
 from sglang.srt.layers.moe.topk import TopK, TopKConfig
+from sglang.srt.runtime_context import get_context
 from sglang.test.test_utils import CustomTestCase
 
 
@@ -162,11 +163,8 @@ class TestFusedSharedExpertScaling(CustomTestCase):
     def test_glm53_idle_rank_preserves_routed_topk_contract(self):
         """An idle rank must return the pre-append top-8 shape; returning top-9
         here would make the AITER postprocessor append shared ID 288 twice."""
-        topk = TopK.__new__(TopK)
-        torch.nn.Module.__init__(topk)
-        topk.topk_config = TopKConfig(top_k=9, num_fused_shared_experts=1)
-        topk.enable_waterfill = False
-        topk.waterfill_balancer = None
+        with get_context().override_server_args(enable_waterfill=False):
+            topk = TopK(top_k=9, layer_id=0, num_fused_shared_experts=1)
 
         with (
             patch.object(
