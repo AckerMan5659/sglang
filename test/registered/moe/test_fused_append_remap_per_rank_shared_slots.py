@@ -18,6 +18,7 @@ from sglang.srt.layers.moe import topk as topk_module
 from sglang.srt.layers.moe.topk import (
     TopKConfig,
     _use_aiter,
+    biased_grouped_topk_impl,
     remap_topk_for_per_rank_shared_slots,
     select_experts,
 )
@@ -308,10 +309,13 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
         (128, None, None, "softmax", False),
     ]
 
-    def _route(self, *, num_fused_shared_experts, logits, bias, router):
+    def _route(
+        self, *, num_fused_shared_experts, logits, bias, router, renormalize=True
+    ):
         _, num_expert_group, topk_group, scoring_func, _ = router
         topk_config = TopKConfig(
             top_k=self.TOP_K + num_fused_shared_experts,
+            renormalize=renormalize,
             use_grouped_topk=num_expert_group is not None,
             num_expert_group=num_expert_group,
             topk_group=topk_group,
@@ -373,6 +377,46 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
                     self.EP_RANK * (num_local_routed + 1) + num_local_routed
                 )
                 self.assertTrue(torch.all(ids[:, k] == home_shared_id))
+
+    def test_unnormalized_weights_stay_raw(self):
+        """With renormalize off, the routed weights are the raw sigmoid scores of
+        the selected experts, with or without a per-rank shared slot. FlashInfer's
+        DeepSeek router always normalizes, so it must not serve this route."""
+        k, num_experts = self.TOP_K, 256
+        router = (num_experts, 8, 4, "sigmoid", True)
+        g = torch.Generator(device="cpu").manual_seed(0)
+        logits = torch.randn(self.NUM_TOKENS, num_experts, generator=g).to(get_device())
+        bias = (0.1 * torch.randn(num_experts, generator=g)).to(get_device())
+        _, ref_ids = biased_grouped_topk_impl(
+            logits,
+            logits,
+            bias,
+            topk=k,
+            renormalize=False,
+            num_expert_group=8,
+            topk_group=4,
+        )
+        num_local_routed = num_experts // self.EP_SIZE
+        for num_fused_shared_experts in (0, 1):
+            with self.subTest(num_fused_shared_experts=num_fused_shared_experts):
+                ids, weights = self._route(
+                    num_fused_shared_experts=num_fused_shared_experts,
+                    logits=logits,
+                    bias=bias,
+                    router=router,
+                    renormalize=False,
+                )
+                routed_ids = ids[:, :k]
+                if num_fused_shared_experts:
+                    routed_ids = routed_ids - routed_ids // (num_local_routed + 1)
+                self.assertTrue(
+                    torch.equal(
+                        routed_ids.sort(-1).values, ref_ids.long().sort(-1).values
+                    )
+                )
+                torch.testing.assert_close(
+                    weights[:, :k], logits.sigmoid().gather(-1, routed_ids)
+                )
 
 
 if __name__ == "__main__":

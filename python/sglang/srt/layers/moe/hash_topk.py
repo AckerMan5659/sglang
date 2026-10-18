@@ -285,6 +285,7 @@ class HashTopK(nn.Module):
                     top_k=self.topk,
                     num_shared_expert_columns=num_shared_expert_columns,
                     routed_scaling_factor=self.routed_scaling_factor,
+                    apply_routed_scaling_factor_on_output=self.apply_routed_scaling_factor_on_output,
                 ),
             )
         else:

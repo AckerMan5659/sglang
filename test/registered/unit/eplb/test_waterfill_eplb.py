@@ -100,6 +100,52 @@ class TestWaterfillEPLB(CustomTestCase):
         self.assertTrue(torch.equal(processed_ids, torch.tensor([[0, 34, 270, 271]])))
         self.assertTrue(torch.equal(recorder_ids, torch.tensor([[0, 33, 263]])))
 
+    def test_eplb_remaps_every_column_of_routed_only_per_rank_ids(self):
+        """A router that leaves the per-rank shared column to post-processing
+        returns routed columns only: EPLB must remap all of them, none taken for
+        a shared column, and the recorder must see the remapped routed ids."""
+        topk_ids = torch.tensor([[0, 33, 262]], dtype=torch.int32)
+        topk_weights = torch.ones_like(topk_ids, dtype=torch.float32)
+        topk_config = TopKConfig(
+            top_k=4,
+            num_shared_expert_columns=1,
+            routed_scaling_factor=1.0,
+        )
+        dispatch_info = SimpleNamespace(
+            num_physical_experts=264, ep_dispatch_algorithm="static"
+        )
+
+        def fake_eplb_postprocess(
+            ids, expert_location_dispatch_info, num_token_non_padded
+        ):
+            return ids + 1
+
+        with (
+            patch.object(topk_module, "_is_cuda", True),
+            patch.object(topk_module, "_use_aiter", False),
+            patch.object(
+                topk_module, "has_per_rank_fused_shared_slots", return_value=True
+            ),
+            get_parallel().override(moe_ep_size=8, moe_ep_rank=7),
+            patch.object(
+                topk_module,
+                "_biased_grouped_topk_postprocess",
+                side_effect=fake_eplb_postprocess,
+            ),
+        ):
+            processed_ids, _, recorder_ids = topk_module._post_process_topk_ids(
+                topk_ids=topk_ids.clone(),
+                topk_weights=topk_weights.clone(),
+                topk_config=topk_config,
+                router_logits=torch.empty((1, 256)),
+                layer_id=0,
+                expert_location_dispatch_info=dispatch_info,
+            )
+
+        # Physical ids 1, 34, 263 in the EP8 per-rank layout; 271 is rank 7's shared slot.
+        self.assertTrue(torch.equal(processed_ids, torch.tensor([[1, 35, 270, 271]])))
+        self.assertTrue(torch.equal(recorder_ids, torch.tensor([[1, 34, 263]])))
+
     def test_topk_recorder_ids_exclude_global_fused_shared_slot(self):
         topk_ids = torch.tensor([[0, 33, 200, 256]], dtype=torch.int32)
         topk_weights = torch.ones_like(topk_ids, dtype=torch.float32)
@@ -143,9 +189,12 @@ class TestWaterfillEPLB(CustomTestCase):
 
     def test_the_shared_expert_column_has_exactly_one_writer(self):
         """A fused shared expert's top-k column is written by the router, or appended
-        by Waterfill after routing; never both (the shared expert would run twice)
-        and never neither (it would be dropped). A model without fused shared
-        experts gets no Waterfill even when Waterfill is enabled."""
+        by Waterfill after routing; never both and never neither. With both,
+        Waterfill would remap the router's shared column as a routed id
+        (``id + id // experts_per_rank``), sending it to a wrong or out-of-range
+        expert (256 experts on EP8: rank 7's slot 263 becomes 271); with neither,
+        the shared expert would be dropped. A model without fused shared experts
+        gets no Waterfill even when Waterfill is enabled."""
         for enable_waterfill in (False, True):
             exec_config = SimpleNamespace(
                 moe=SimpleNamespace(enable_waterfill=enable_waterfill)
