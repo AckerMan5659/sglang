@@ -112,6 +112,7 @@ from sglang.srt.model_executor.forward_batch_info import (
 from sglang.srt.model_executor.forward_context import (
     ForwardContext,
     forward_context,
+    get_forward_context,
     has_forward_context,
 )
 from sglang.srt.model_executor.graph_memory_usage import (
@@ -1954,9 +1955,14 @@ class ModelRunner:
         split_forward_count: int = 1,
     ) -> ModelRunnerOutput:
         if has_forward_context():
-            ctx_mgr = contextlib.nullcontext()
+            ctx_mgr = forward_context(
+                get_forward_context(), forward_batch=forward_batch
+            )
         else:
-            ctx_mgr = forward_context(ForwardContext(attn_backend=self.attn_backend))
+            ctx_mgr = forward_context(
+                ForwardContext(attn_backend=self.attn_backend),
+                forward_batch=forward_batch,
+            )
         with ctx_mgr:
             mode_check = (
                 forward_batch.forward_mode.is_cpu_graph
