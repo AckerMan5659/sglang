@@ -138,13 +138,18 @@ bag to override at all.
   `linear_attn_backends`) — threaded to consumers as
   arguments, never backfilled onto a shared object. A per-runner choice also stays
   *out* of the bags: recording it there is how a second runner inherits the first
-  one's answer, which is exactly the bug `linear_attn_backends` replaced. The one sanctioned bend in that rule is
-  *scoped*: `ModelRunner._load_format_scope` exposes the draft's
-  `--speculative-draft-load-format` through `get_model().override(load_format=...)`
-  for exactly the duration of the draft build, because model construction
-  reads that bag leaf — the override restores on exit, so nothing outlives
-  the scope. When there is a runner in hand, read its
-  stamp; that is a different rule from "read the instance".
+  one's answer, which is exactly the bug `linear_attn_backends` replaced. The two
+  sanctioned bends in that rule are *scoped*. `ModelRunner._load_format_scope`
+  exposes the draft's `--speculative-draft-load-format` through
+  `get_model().override(load_format=...)` for exactly the duration of the draft
+  build, because model construction reads that bag leaf — the override restores
+  on exit, so nothing outlives the scope. And the shared-experts fusion decision
+  and fused count are per-runner `Flags.moe` leaves (not bag leaves) that the
+  loader installs for each model build; `draft_model_build_scope` routes a
+  draft's answers to the speculative twins and restores the target's ACTIVE
+  values on exit, so layers read them only while they are built. When there is a
+  runner in hand, read its stamp; that is a different rule from "read the
+  instance".
 - **Per-instance boundaries** — the tokenizer-manager family, everything under
   `entrypoints/`, and the tokenizer-process multimodal processors read the bags.
   The old justification for keeping them on `self.server_args` ("several

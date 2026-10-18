@@ -13,6 +13,12 @@ This case asks the invariant directly instead: **presence parity between a draft
 entry class and its target**. Identity is deliberately not required -- a draft
 that delegates with adapted arguments (the Qwen3.5 MTP unwraps `text_config` and
 substitutes the MTP quantization config) is exactly right.
+
+The loader fuses shared experts as routed slots only for an entry class that
+answers both `shared_experts_fusion_disable_reason` and
+`num_fusable_shared_experts`; an entry class with the gate alone runs unfused
+without any error. The second case checks that every gated entry class also
+declares its count, apart from a reviewed list.
 """
 
 import re
@@ -28,7 +34,29 @@ register_cpu_ci(est_time=14, suite="base-a-test-cpu")
 # disagreement is a defect rather than a difference. Weight-name maps
 # (`packed_modules_mapping`, `hf_to_sglang_mapper`) are deliberately absent: a
 # draft's checkpoint has its own names, so those differ by design.
-PARITY_HOOKS = ("shared_experts_fusion_disable_reason",)
+PARITY_HOOKS = ("shared_experts_fusion_disable_reason", "num_fusable_shared_experts")
+
+# Gated entry classes that declare no count, on purpose: HYV4's gate always
+# disables fusion, and the Qwen3.5 family (with the models built on it) fuses a
+# gated shared expert inside its own MoE block, outside the loader's count.
+GATE_WITHOUT_COUNT = frozenset(
+    {
+        "HYV4ForCausalLM",
+        "HYV4ForCausalLMNextN",
+        "InternS2MobiusForConditionalGeneration",
+        "InternS2PreviewForConditionalGeneration",
+        "MiniCPMV",
+        "MiniCPMV4_6ForConditionalGeneration",
+        "MiniCPMV4_7ForConditionalGeneration",
+        "Qwen3_5ForCausalLM",
+        "Qwen3_5ForCausalLMMTP",
+        "Qwen3_5ForConditionalGeneration",
+        "Qwen3_5MoeForCausalLM",
+        "Qwen3_5MoeForConditionalGeneration",
+        "Qwen4ExpForCausalLMMTP",
+        "Qwen4ExpForConditionalGeneration",
+    }
+)
 
 # `...Eagle`/`...Eagle3` drafts are standalone checkpoints with their own
 # architecture; the rest mirror a stage of their target.
@@ -47,14 +75,19 @@ def _target_of(arch: str, archs: dict):
     return None
 
 
+def _entry_classes() -> dict:
+    archs = {}
+    for arch in sorted(ModelRegistry.get_supported_archs()):
+        try:
+            archs[arch] = ModelRegistry.resolve_model_cls(arch)[0]
+        except Exception:
+            continue  # an arch this environment cannot import
+    return archs
+
+
 class TestDraftEntryHookParity(CustomTestCase):
     def test_a_draft_resolves_a_gate_exactly_when_its_target_does(self):
-        archs = {}
-        for arch in sorted(ModelRegistry.get_supported_archs()):
-            try:
-                archs[arch] = ModelRegistry.resolve_model_cls(arch)[0]
-            except Exception:
-                continue  # an arch this environment cannot import
+        archs = _entry_classes()
 
         checked, offenders = 0, []
         for arch, cls in archs.items():
@@ -81,6 +114,34 @@ class TestDraftEntryHookParity(CustomTestCase):
             "same loader hooks; otherwise the loader installs one decision for "
             "the target and another for the draft, and the draft's weights are "
             "laid out for the wrong one:\n  " + "\n  ".join(offenders),
+        )
+
+
+class TestFusionHookPairing(CustomTestCase):
+    def test_a_fusion_gate_comes_with_a_count(self):
+        archs = _entry_classes()
+        gated = {
+            arch
+            for arch, cls in archs.items()
+            if hasattr(cls, "shared_experts_fusion_disable_reason")
+        }
+        missing = sorted(
+            arch
+            for arch in gated - GATE_WITHOUT_COUNT
+            if not hasattr(archs[arch], "num_fusable_shared_experts")
+        )
+        self.assertEqual(
+            [],
+            missing,
+            "these entry classes expose a fusion gate but no "
+            "num_fusable_shared_experts, so the loader runs them unfused; declare "
+            "the count (delegating like the gate), or list the class in "
+            "GATE_WITHOUT_COUNT with the reason it never fuses routed slots",
+        )
+        self.assertEqual(
+            [],
+            sorted(GATE_WITHOUT_COUNT - gated),
+            "GATE_WITHOUT_COUNT names entry classes that are gone or lost their gate",
         )
 
 

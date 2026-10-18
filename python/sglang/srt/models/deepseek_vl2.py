@@ -156,23 +156,30 @@ class DeepseekVL2MlpProjector(nn.Module):
         return x
 
 
+def _fused_moe_text_config(hf_config):
+    """The language config when it builds the MLA DeepSeek-V2 MoE model, or None
+    for the non-MLA language model."""
+    language_config = hf_config.language_config
+    return language_config if language_config.use_mla else None
+
+
 class DeepseekVL2ForCausalLM(nn.Module):
     @staticmethod
     def shared_experts_fusion_disable_reason(hf_config, quant_config):
-        language_config = hf_config.language_config
-        if not language_config.use_mla:
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return None
         # The language model is built without a quantization config.
         return DeepseekV2ForCausalLM.shared_experts_fusion_disable_reason(
-            language_config, None
+            text_config, None
         )
 
     @staticmethod
     def num_fusable_shared_experts(hf_config) -> int:
-        language_config = hf_config.language_config
-        if not language_config.use_mla:
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return 0
-        return DeepseekV2ForCausalLM.num_fusable_shared_experts(language_config)
+        return DeepseekV2ForCausalLM.num_fusable_shared_experts(text_config)
 
     def __init__(
         self,

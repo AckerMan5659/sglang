@@ -1496,10 +1496,10 @@ class Glm5NextForConditionalGeneration(nn.Module):
 
     @classmethod
     def num_fusable_shared_experts(cls, hf_config) -> int:
-        """Shared experts fused as routed slots when fusion is on."""
-        text_config = getattr(hf_config, "text_config", hf_config)
-        num_shared_experts = getattr(text_config, "n_shared_experts", None) or 0
-        assert num_shared_experts in (0, 1), (
+        """Shared experts fused as routed slots when fusion is on (the gate has
+        already required exactly one)."""
+        num_shared_experts = hf_config.text_config.n_shared_experts
+        assert num_shared_experts == 1, (
             f"Only 1 fused shared expert is supported for {cls.__name__}"
         )
         return num_shared_experts

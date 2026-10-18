@@ -1421,16 +1421,23 @@ def build_qwen2_decoder_as_encoder(
     return decoder_as_encoder
 
 
+def _fused_moe_text_config(hf_config):
+    """The text config when it builds the DeepSeek-V2 MoE branch, or None for the
+    branches that build the dense DeepseekForCausalLM, which has no shared
+    experts to fuse. Read from the config: the hooks run before the model exists."""
+    text_config = hf_config.text_config
+    if is_ocr2_config(hf_config) or not (
+        text_config.topk_method == "noaux_tc" or text_config.use_mla
+    ):
+        return None
+    return text_config
+
+
 class DeepseekOCRForCausalLM(nn.Module):
     @staticmethod
     def shared_experts_fusion_disable_reason(hf_config, quant_config):
-        text_config = hf_config.text_config
-        # Class-level hook: called before the model is built, so no `self.is_ocr2` yet.
-        if is_ocr2_config(hf_config) or not (
-            text_config.topk_method == "noaux_tc" or text_config.use_mla
-        ):
-            # Those branches build the dense DeepseekForCausalLM, which has no
-            # shared experts to fuse.
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return None
         return DeepseekV2ForCausalLM.shared_experts_fusion_disable_reason(
             text_config, quant_config
@@ -1438,10 +1445,8 @@ class DeepseekOCRForCausalLM(nn.Module):
 
     @staticmethod
     def num_fusable_shared_experts(hf_config) -> int:
-        text_config = hf_config.text_config
-        if is_ocr2_config(hf_config) or not (
-            text_config.topk_method == "noaux_tc" or text_config.use_mla
-        ):
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return 0
         return DeepseekV2ForCausalLM.num_fusable_shared_experts(text_config)
 

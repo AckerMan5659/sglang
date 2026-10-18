@@ -183,11 +183,9 @@ class MiniMaxM3SparseForConditionalGeneration(nn.Module):
     def num_fusable_shared_experts(cls, hf_config) -> int:
         """Shared experts fused as routed slots when fusion is on; they live on
         the text config."""
-        text_config = getattr(hf_config, "text_config", hf_config)
-        assert text_config.n_shared_experts == 1, (
-            "Only 1 fused shared expert is supported"
-        )
-        return text_config.n_shared_experts
+        num_shared_experts = hf_config.text_config.n_shared_experts
+        assert num_shared_experts == 1, "Only 1 fused shared expert is supported"
+        return num_shared_experts
 
     @classmethod
     def get_model_config_for_expert_location(cls, config):

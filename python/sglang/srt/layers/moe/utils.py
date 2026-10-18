@@ -500,12 +500,16 @@ def initialize_moe_config():
     moe.tbo_token_distribution_threshold = overlap.tbo_token_distribution_threshold
     moe.disable_fp4_allgather = exec_moe.disable_flashinfer_cutlass_moe_fp4_allgather
     moe.quantization = get_model().quantization
-    # Seeded with the user's intent; each model's gate refines the ACTIVE
-    # value for its own build (install_shared_experts_fusion_decision).
+    # Seeded with the user's intent; the loader installs each model's ACTIVE
+    # decision and fused count for its own build
+    # (install_shared_experts_fusion_decision). No model is built yet, so a count
+    # left by an earlier build in this process is cleared.
     moe.disable_shared_experts_fusion = exec_moe.disable_shared_experts_fusion
     moe.speculative_disable_shared_experts_fusion = (
         exec_moe.disable_shared_experts_fusion
     )
+    moe.num_fused_shared_experts = None
+    moe.speculative_num_fused_shared_experts = None
 
 
 def get_moe_a2a_backend() -> MoeA2ABackend:

@@ -68,14 +68,22 @@ class VisionEncoderArgs:
     mm_projector_id: str = ""
 
 
+def _fused_moe_text_config(hf_config):
+    """The text config when it builds the DeepSeek-V3 MoE backbone, or None for
+    the GQA text config, which builds the dense Mistral backbone."""
+    text_config = hf_config.text_config
+    if getattr(text_config, "model_type", "") != "deepseek_v3":
+        return None
+    return text_config
+
+
 class PixtralForConditionalGeneration(nn.Module):
     merge_by_field_config = True
 
     @staticmethod
     def shared_experts_fusion_disable_reason(hf_config, quant_config):
-        text_config = hf_config.text_config
-        if getattr(text_config, "model_type", "") != "deepseek_v3":
-            # The GQA text config builds the dense Mistral backbone.
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return None
         return MistralLarge3ForCausalLM.shared_experts_fusion_disable_reason(
             text_config, quant_config
@@ -83,8 +91,8 @@ class PixtralForConditionalGeneration(nn.Module):
 
     @staticmethod
     def num_fusable_shared_experts(hf_config) -> int:
-        text_config = hf_config.text_config
-        if getattr(text_config, "model_type", "") != "deepseek_v3":
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return 0
         return MistralLarge3ForCausalLM.num_fusable_shared_experts(text_config)
 

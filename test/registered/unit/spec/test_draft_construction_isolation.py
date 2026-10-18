@@ -201,10 +201,12 @@ class TestFusionDecisionFlag(CustomTestCase):
             ServerArgs(model_path="dummy", disable_shared_experts_fusion=True),
             role="scheduler",
         )
+        get_flags().moe.num_fused_shared_experts = 1  # left by an earlier build
         initialize_moe_config()
         moe = get_flags().moe
         self.assertTrue(moe.disable_shared_experts_fusion)
         self.assertTrue(moe.speculative_disable_shared_experts_fusion)
+        self.assertEqual(get_num_fused_shared_experts(), 0)
 
     def test_a_forward_time_read_is_refused(self):
         # The invariant behind the whole design: the decision is consumed at

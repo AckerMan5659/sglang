@@ -120,22 +120,28 @@ def _language_model_config(config: KimiVLConfig):
     return text_config
 
 
+def _fused_moe_text_config(hf_config):
+    """The config of the DeepSeek-V2 language model this checkpoint builds, or
+    None when it builds none (encoder only)."""
+    return None if hf_config.encoder_only else _language_model_config(hf_config)
+
+
 class KimiVLForConditionalGeneration(nn.Module):
     @staticmethod
     def shared_experts_fusion_disable_reason(hf_config, quant_config):
-        if hf_config.encoder_only:
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return None
         return DeepseekV2ForCausalLM.shared_experts_fusion_disable_reason(
-            _language_model_config(hf_config), quant_config
+            text_config, quant_config
         )
 
     @staticmethod
     def num_fusable_shared_experts(hf_config) -> int:
-        if hf_config.encoder_only:
+        text_config = _fused_moe_text_config(hf_config)
+        if text_config is None:
             return 0
-        return DeepseekV2ForCausalLM.num_fusable_shared_experts(
-            _language_model_config(hf_config)
-        )
+        return DeepseekV2ForCausalLM.num_fusable_shared_experts(text_config)
 
     def __init__(
         self,

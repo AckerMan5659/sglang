@@ -41,10 +41,12 @@ class TestDeepseekV4SharedExpertFusionPolicy(CustomTestCase):
         )
         override.install()
         self.addCleanup(override.restore)
-        get_flags().moe.disable_shared_experts_fusion = None
-        self.addCleanup(
-            lambda: setattr(get_flags().moe, "disable_shared_experts_fusion", None)
-        )
+        moe = get_flags().moe
+        moe.disable_shared_experts_fusion = None
+        moe.num_fused_shared_experts = None
+        self.addCleanup(lambda: setattr(moe, "disable_shared_experts_fusion", None))
+        # A fused count left behind would reach TopKs built later in this process.
+        self.addCleanup(lambda: setattr(moe, "num_fused_shared_experts", None))
 
     def _install(self, model_class=DeepseekV4ForCausalLM, n_shared_experts=1):
         install_shared_experts_fusion_decision(

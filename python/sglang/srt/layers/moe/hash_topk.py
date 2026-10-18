@@ -41,6 +41,7 @@ class HashTopK(nn.Module):
         self,
         topk,
         num_experts,
+        *,
         vocab_size,
         scoring_func="sqrtsoftplus",
         routed_scaling_factor=1.5,

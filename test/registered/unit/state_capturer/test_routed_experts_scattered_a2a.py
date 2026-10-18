@@ -7,6 +7,7 @@ from unittest import mock
 import torch
 
 from sglang.srt.layers.moe.utils import MoeA2ABackend
+from sglang.srt.runtime_context import get_flags
 from sglang.srt.state_capturer import routed_experts as re_mod
 from sglang.srt.state_capturer.base import BaseDeviceCache
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -118,6 +119,36 @@ class TestCaptureRoutedIdsOnly(CustomTestCase):
         ids = torch.zeros((4, self.TOPK_SIZE - 1), dtype=torch.int32)
         with self.assertRaises(ValueError):
             self._capture(self._capturer(), ids, "none")
+
+
+class TestCapturerWidthFollowsTheInstalledCount(CustomTestCase):
+    def test_a_wrapper_model_gets_room_for_the_fused_shared_column(self):
+        """A wrapper entry class (Kimi-K2.5, DeepSeek-VL2 and the like) does not
+        carry the fused count itself. Sized from the model object, the capture
+        buffer was one column short with fusion on, and the router's
+        routed-plus-shared ids were rejected as a wrong width; it must follow
+        the count installed for the runner's model."""
+        seen = {}
+
+        def record(self, model_config, **kwargs):
+            seen.update(kwargs)
+
+        features = SimpleNamespace(enable_return_routed_experts=True)
+        with (
+            mock.patch.object(
+                re_mod, "get_exec", return_value=SimpleNamespace(features=features)
+            ),
+            mock.patch.object(re_mod.RoutedExpertsCapturer, "__init__", record),
+            get_flags().moe.override(num_fused_shared_experts=1),
+        ):
+            re_mod.RoutedExpertsCapturer.create(
+                model=SimpleNamespace(),
+                model_config=SimpleNamespace(),
+                num_tokens=8,
+                max_running_requests=2,
+                device="cpu",
+            )
+        self.assertEqual(seen["num_fused_shared_experts"], 1)
 
 
 if __name__ == "__main__":

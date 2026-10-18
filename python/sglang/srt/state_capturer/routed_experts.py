@@ -12,6 +12,7 @@ from sglang.srt.layers.dp_attention import (
     is_dp_attention_enabled,
 )
 from sglang.srt.layers.moe import get_moe_a2a_backend
+from sglang.srt.layers.moe.utils import get_num_fused_shared_experts
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.runtime_context import (
     get_exec,
@@ -49,9 +50,10 @@ class RoutedExpertsCapturer(BaseTopkCapturer):
     ) -> Optional["RoutedExpertsCapturer"]:
         if not get_exec().features.enable_return_routed_experts:
             return None
-        # The model's own attribute is the baked decision (0 when its gate
-        # disabled fusion); the ACTIVE flag can be holding another runner's.
-        num_fused_shared_experts = getattr(model, "num_fused_shared_experts", 0)
+        # The count the loader installed for this runner's model. Wrapper entry
+        # classes carry no attribute of their own, and the target is captured
+        # before any draft builds (a draft's build restores the target's count).
+        num_fused_shared_experts = get_num_fused_shared_experts()
         return RoutedExpertsCapturer(
             model_config,
             num_tokens=num_tokens,
