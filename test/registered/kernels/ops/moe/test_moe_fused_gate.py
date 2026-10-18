@@ -1,10 +1,9 @@
 """Correctness tests for the Triton :func:`moe_fused_gate` router.
 
-The Triton kernel is a drop-in reimplementation of the CUDA fused gate for the
-ungrouped case (``num_expert_group == 1``). We validate it three ways:
+The Triton kernel supports ungrouped and grouped routing. We validate it three ways:
 
 * against an explicit, definition-based torch reference (documents the math),
-* against the CUDA JIT kernel it mirrors (:func:`moe_fused_gate_jit`), and
+* against the CUDA JIT kernel on normalized inputs (:func:`moe_fused_gate_jit`), and
 * against the production ``biased_grouped_topk_impl`` for the sigmoid / no-shared
   path that the kernel actually replaces in ``topk.py``.
 
@@ -209,15 +208,14 @@ def test_moe_fused_gate_matches_cuda_jit(
 
 @pytest.mark.parametrize("num_experts,topk", [(256, 6), (384, 8), (512, 8)])
 @pytest.mark.parametrize("apply_scale", [True, False])
+@pytest.mark.parametrize("renormalize", [True, False])
 def test_moe_fused_gate_matches_production_impl(
-    num_experts: int, topk: int, apply_scale: bool
+    num_experts: int, topk: int, apply_scale: bool, renormalize: bool
 ) -> None:
     """Match production ``biased_grouped_topk_impl`` on the path it replaces.
 
-    The kernel supersedes the ungrouped sigmoid CUDA path in ``topk.py``; that
-    reference hardcodes sigmoid and no fused shared expert, and the production
-    path always renormalizes (the impl only applies the scaling factor when
-    ``renormalize`` is set), so we compare on the renormalized path.
+    Compare ungrouped sigmoid routing without shared slots, with normalization
+    and explicit routed scaling enabled independently.
     """
     from sglang.srt.layers.moe.topk import biased_grouped_topk_impl
 
@@ -230,7 +228,7 @@ def test_moe_fused_gate_matches_production_impl(
         bias,
         topk=topk,
         scoring_func="sigmoid",
-        renormalize=True,
+        renormalize=renormalize,
         routed_scaling_factor=scale,
         apply_routed_scaling_factor_on_output=apply_scale,
     )
@@ -240,7 +238,7 @@ def test_moe_fused_gate_matches_production_impl(
         scores,
         bias,
         topk,
-        True,
+        renormalize,
         num_expert_group=1,
         topk_group=1,
         routed_scaling_factor=scale,
