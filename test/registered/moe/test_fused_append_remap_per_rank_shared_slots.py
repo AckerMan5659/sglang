@@ -17,12 +17,11 @@ from sglang.kernels.ops.moe.fused_moe_triton_kernels import (
 from sglang.srt.layers.moe import topk as topk_module
 from sglang.srt.layers.moe.topk import (
     TopKConfig,
-    _use_aiter,
     biased_grouped_topk_impl,
     remap_topk_for_per_rank_shared_slots,
     select_experts,
 )
-from sglang.srt.runtime_context import get_parallel
+from sglang.srt.runtime_context import get_context, get_parallel
 from sglang.srt.utils import get_device, is_cuda
 from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
@@ -180,46 +179,43 @@ class TestFusedAppendRemapPerRankSharedSlots(CustomTestCase):
                 self.assertLess(max(routed_set), ep_size * num_local_experts)
 
     def test_equivalence_with_eager_remap(self):
-        """Fused kernel == the eager per-rank shared-slot remap, which also appends.
-
-        The eager remap writes the shared weight: 1.0 on the aiter/HIP path
-        (routed_scaling_factor is pre-folded into the routed topk weights), else
-        1/routed_scaling_factor. The fused kernel is invoked with that same value
-        so the two paths stay bit-identical (ids match regardless of scaling).
-        """
+        """Fused and eager append agree for folding and nonfolding routes."""
         rsf = 2.5
-        scale_factor = 1.0 if _use_aiter else 1.0 / rsf
-        for m, k, npr, ep_size, ep_rank, s in self.CASES:
-            with self.subTest(m=m, k=k, npr=npr, ep_rank=ep_rank, s=s):
-                shared_id_base, num_local_routed = self._shared_id_base(
-                    npr, ep_size, ep_rank, s
-                )
-                topk_ids, topk_weights = self._make_inputs(m, k, npr)
+        for folded, scale_factor in ((False, 1.0 / rsf), (True, 1.0)):
+            for m, k, npr, ep_size, ep_rank, s in self.CASES:
+                with self.subTest(m=m, k=k, npr=npr, ep_rank=ep_rank, s=s):
+                    shared_id_base, num_local_routed = self._shared_id_base(
+                        npr, ep_size, ep_rank, s
+                    )
+                    topk_ids, topk_weights = self._make_inputs(m, k, npr)
 
-                fused_ids, fused_w = fused_append_remap_shared_experts_deepep(
-                    topk_ids.clone(),
-                    topk_weights.clone(),
-                    s,
-                    scale_factor,
-                    shared_id_base,
-                    num_local_routed,
-                )
-
-                with get_parallel().override(moe_ep_size=ep_size, moe_ep_rank=ep_rank):
-                    eager_ids, eager_w = remap_topk_for_per_rank_shared_slots(
+                    fused_ids, fused_w = fused_append_remap_shared_experts_deepep(
                         topk_ids.clone(),
                         topk_weights.clone(),
                         s,
-                        npr,
-                        TopKConfig(
-                            top_k=k,
-                            num_shared_topk_slots=s,
-                            routed_scaling_factor=rsf,
-                        ),
+                        scale_factor,
+                        shared_id_base,
+                        num_local_routed,
                     )
 
-                self.assertTrue(torch.equal(fused_ids, eager_ids))
-                self.assertTrue(torch.allclose(fused_w, eager_w))
+                    with get_parallel().override(
+                        moe_ep_size=ep_size, moe_ep_rank=ep_rank
+                    ):
+                        eager_ids, eager_w = remap_topk_for_per_rank_shared_slots(
+                            topk_ids.clone(),
+                            topk_weights.clone(),
+                            s,
+                            npr,
+                            TopKConfig(
+                                top_k=k,
+                                num_shared_topk_slots=s,
+                                routed_scaling_factor=rsf,
+                                apply_routed_scaling_factor_on_output=folded,
+                            ),
+                        )
+
+                    self.assertTrue(torch.equal(fused_ids, eager_ids))
+                    self.assertTrue(torch.allclose(fused_w, eager_w))
 
     def test_shared_weight_is_one_on_aiter_path(self):
         """On the aiter path the always-on shared expert must contribute 1.0x."""
@@ -378,6 +374,38 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
                 )
                 self.assertTrue(torch.all(ids[:, k] == home_shared_id))
 
+    def test_unnormalized_global_shared_contribution_is_one(self):
+        """Raw routed scores must not multiply the global shared contribution."""
+        logits = torch.zeros(4, 256, device=get_device())
+        rsf = 2.5
+        with get_context().override_server_args(
+            moe_a2a_backend="none", moe_runner_backend="triton"
+        ):
+            for folded in (False, True):
+                with self.subTest(folded=folded):
+                    config = TopKConfig(
+                        top_k=9,
+                        use_grouped_topk=True,
+                        num_expert_group=8,
+                        topk_group=4,
+                        renormalize=False,
+                        num_shared_topk_slots=1,
+                        correction_bias=torch.zeros(256, device=get_device()),
+                        scoring_func="sigmoid",
+                        routed_scaling_factor=rsf,
+                        apply_routed_scaling_factor_on_output=folded,
+                        allow_routed_experts_capture=False,
+                    )
+                    output = select_experts(logits, logits, config)
+                    torch.testing.assert_close(
+                        output.topk_weights[:, :8],
+                        torch.full_like(
+                            output.topk_weights[:, :8], 0.5 * (rsf if folded else 1.0)
+                        ),
+                    )
+                    shared = output.topk_weights[:, -1] * (1.0 if folded else rsf)
+                    torch.testing.assert_close(shared, torch.ones_like(shared))
+
     def test_unnormalized_weights_stay_raw(self):
         """With renormalize off, the routed weights are the raw sigmoid scores of
         the selected experts, with or without a per-rank shared slot. FlashInfer's
@@ -400,7 +428,7 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
         for num_fused_shared_experts in (0, 1):
             with self.subTest(num_fused_shared_experts=num_fused_shared_experts):
                 ids, weights = self._route(
-                    num_fused_shared_experts=num_fused_shared_experts,
+                    num_shared_topk_slots=num_fused_shared_experts,
                     logits=logits,
                     bias=bias,
                     router=router,
