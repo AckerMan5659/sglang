@@ -22,7 +22,7 @@ from sglang.srt.layers.moe.topk import (
     remap_topk_for_per_rank_shared_slots,
     select_experts,
 )
-from sglang.srt.runtime_context import get_parallel
+from sglang.srt.runtime_context import get_context, get_parallel
 from sglang.srt.utils import get_device, is_cuda
 from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
@@ -377,6 +377,38 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
                     self.EP_RANK * (num_local_routed + 1) + num_local_routed
                 )
                 self.assertTrue(torch.all(ids[:, k] == home_shared_id))
+
+    def test_unnormalized_global_shared_contribution_is_one(self):
+        """Raw routed scores must not multiply the global shared contribution."""
+        logits = torch.zeros(4, 256, device=get_device())
+        rsf = 2.5
+        with get_context().override_server_args(
+            moe_a2a_backend="none", moe_runner_backend="triton"
+        ):
+            for folded in (False, True):
+                with self.subTest(folded=folded):
+                    config = TopKConfig(
+                        top_k=9,
+                        use_grouped_topk=True,
+                        num_expert_group=8,
+                        topk_group=4,
+                        renormalize=False,
+                        num_fused_shared_experts=1,
+                        correction_bias=torch.zeros(256, device=get_device()),
+                        scoring_func="sigmoid",
+                        routed_scaling_factor=rsf,
+                        apply_routed_scaling_factor_on_output=folded,
+                        allow_routed_experts_capture=False,
+                    )
+                    output = select_experts(logits, logits, config)
+                    torch.testing.assert_close(
+                        output.topk_weights[:, :8],
+                        torch.full_like(
+                            output.topk_weights[:, :8], 0.5 * (rsf if folded else 1.0)
+                        ),
+                    )
+                    shared = output.topk_weights[:, -1] * (1.0 if folded else rsf)
+                    torch.testing.assert_close(shared, torch.ones_like(shared))
 
     def test_unnormalized_weights_stay_raw(self):
         """With renormalize off, the routed weights are the raw sigmoid scores of
