@@ -428,7 +428,7 @@ class TestSelectExpertsPerRankSharedSlots(CustomTestCase):
         for num_fused_shared_experts in (0, 1):
             with self.subTest(num_fused_shared_experts=num_fused_shared_experts):
                 ids, weights = self._route(
-                    num_shared_topk_slots=num_fused_shared_experts,
+                    num_fused_shared_experts=num_fused_shared_experts,
                     logits=logits,
                     bias=bias,
                     router=router,
