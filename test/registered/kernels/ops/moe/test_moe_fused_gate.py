@@ -80,20 +80,24 @@ def _reference_gate(
         work.scatter_(1, winner.long().unsqueeze(1), float("-inf"))
 
     routed_sum = routed_wgt.sum(dim=1, keepdim=True)
+    if renormalize:
+        norm = torch.where(routed_sum > 0.0, routed_sum, torch.ones_like(routed_sum))
+        routed_wgt = routed_wgt / norm
+    if apply_routed_scaling_factor_on_output:
+        routed_wgt = routed_wgt * routed_scaling_factor
     weights = torch.empty(bs, topk, dtype=torch.float32, device=scores.device)
     indices = torch.empty(bs, topk, dtype=torch.int32, device=scores.device)
     weights[:, :num_routed] = routed_wgt
     indices[:, :num_routed] = routed_idx
     if num_fused_shared_experts > 0:
-        weights[:, num_routed:] = routed_sum / routed_scaling_factor
+        weights[:, num_routed:] = (
+            1.0
+            if apply_routed_scaling_factor_on_output
+            else 1.0 / routed_scaling_factor
+        )
         for j in range(num_fused_shared_experts):
             indices[:, num_routed + j] = num_experts + j
 
-    if renormalize:
-        norm = torch.where(routed_sum > 0.0, routed_sum, torch.ones_like(routed_sum))
-        weights = weights / norm
-    if apply_routed_scaling_factor_on_output:
-        weights = weights * routed_scaling_factor
     return weights, indices
 
 
