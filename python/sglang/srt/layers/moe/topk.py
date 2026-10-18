@@ -106,7 +106,7 @@ from sglang.srt.layers.moe import (
 )
 from sglang.srt.layers.moe.utils import (
     has_per_rank_fused_shared_slots,
-    topk_shared_expert_columns,
+    shared_topk_slots,
     waterfill_routes_shared_experts,
 )
 from sglang.srt.state_capturer.routed_experts import get_global_experts_capturer
@@ -164,7 +164,7 @@ def _use_rocm_triton_softmax_topk(
     gating_output: torch.Tensor,
     topk: int,
     correction_bias: Optional[torch.Tensor],
-    num_shared_expert_columns: int,
+    num_shared_topk_slots: int,
     packed_out: Optional[torch.Tensor],
 ) -> bool:
     """Use the lower-latency Triton router for Qwen3.5 decode-sized rows."""
@@ -178,7 +178,7 @@ def _use_rocm_triton_softmax_topk(
         and gating_output.dtype == torch.bfloat16
         and topk == 10
         and correction_bias is None
-        and num_shared_expert_columns == 0
+        and num_shared_topk_slots == 0
         and packed_out is None
     )
 
@@ -260,7 +260,7 @@ class TopKConfig:
     renormalize: bool = True
     # Trailing columns of top_k that the router fills with fused shared experts.
     # Zero when Waterfill appends the shared expert after routing.
-    num_shared_expert_columns: int = 0
+    num_shared_topk_slots: int = 0
     custom_routing_function: Optional[Callable] = None
     correction_bias: Optional[torch.Tensor] = None
     torch_native: bool = False
@@ -588,7 +588,7 @@ class TopK(BaseFusedOp):
     Parameters:
     --top_k: the number of routed experts selected per token. When the model being built
       fuses shared experts (``get_num_fused_shared_experts``), their columns follow: written
-      by the router (``TopKConfig.num_shared_expert_columns``), or appended by Waterfill.
+      by the router (``TopKConfig.num_shared_topk_slots``), or appended by Waterfill.
     --layer_id: global index of the owning layer. Required: routed-experts capture and
       per-layer EPLB state are keyed by it.
     --routed_scaling_factor: the scaling factor for routed experts in topk_weights.
@@ -630,18 +630,18 @@ class TopK(BaseFusedOp):
 
         self.enable_waterfill = waterfill_routes_shared_experts()
         self.waterfill_balancer = None
-        num_shared_columns = topk_shared_expert_columns()
+        num_shared_slots = shared_topk_slots()
 
         # Under the flashinfer_mxfp4 backend, fp4-expert ckpts take STANDARD
         # (consumes topk_ids/weights); otherwise BYPASSED. No-op on other backends.
         self.is_fp4_experts = is_fp4_experts
         self.topk_config = TopKConfig(
-            top_k=top_k + num_shared_columns,
+            top_k=top_k + num_shared_slots,
             use_grouped_topk=use_grouped_topk,
             renormalize=renormalize,
             topk_group=topk_group,
             num_expert_group=num_expert_group,
-            num_shared_expert_columns=num_shared_columns,
+            num_shared_topk_slots=num_shared_slots,
             custom_routing_function=custom_routing_function,
             correction_bias=correction_bias,
             routed_scaling_factor=routed_scaling_factor,
@@ -869,7 +869,7 @@ class TopK(BaseFusedOp):
                         device=device,
                     )
                 )
-        topk = self.topk_config.top_k - self.topk_config.num_shared_expert_columns
+        topk = self.topk_config.top_k - self.topk_config.num_shared_topk_slots
         with use_symmetric_memory(
             get_parallel().tp_group, disabled=not is_allocation_symmetric()
         ):
@@ -878,8 +878,8 @@ class TopK(BaseFusedOp):
         # FIXME: router_logits should be of size (0, num_experts)
         router_logits = torch.empty((0, topk), dtype=torch.float32, device=device)
         topk_output = StandardTopKOutput(topk_weights, topk_ids, router_logits)
-        if has_per_rank_fused_shared_slots(self.topk_config.num_shared_expert_columns):
-            n = self.topk_config.num_shared_expert_columns
+        if has_per_rank_fused_shared_slots(self.topk_config.num_shared_topk_slots):
+            n = self.topk_config.num_shared_topk_slots
             topk_output = topk_output._replace(
                 topk_ids=topk_output.topk_ids.new_empty(
                     (0, topk_output.topk_ids.shape[-1] + n)
@@ -1718,7 +1718,7 @@ def _fused_gate_masks_padded_rows(scoring_func: str) -> bool:
 
 def _fused_gate_emits_packed_ids(
     scoring_func: str,
-    num_shared_expert_columns: int,
+    num_shared_topk_slots: int,
     expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo],
     routing_overridden: bool,
     enabled: bool,
@@ -1730,7 +1730,7 @@ def _fused_gate_emits_packed_ids(
         and _fused_gate_masks_padded_rows(scoring_func)
         and get_moe_runner_backend().is_flashinfer_mxfp4()
         and expert_location_dispatch_info is None
-        and num_shared_expert_columns == 0
+        and num_shared_topk_slots == 0
         and not routing_overridden
     )
 
@@ -2330,28 +2330,26 @@ def _post_process_topk_ids(
     expert_location_dispatch_info: Optional[ExpertLocationDispatchInfo] = None,
     padded_rows_masked: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    num_shared_expert_columns = topk_config.num_shared_expert_columns
-    use_per_rank_shared_slots = has_per_rank_fused_shared_slots(
-        num_shared_expert_columns
-    )
+    num_shared_topk_slots = topk_config.num_shared_topk_slots
+    use_per_rank_shared_slots = has_per_rank_fused_shared_slots(num_shared_topk_slots)
     fused_shared_experts_scaling_factor = (
         topk_config.fused_shared_experts_scaling_factor
     )
     # False when select_experts asked the router for routed experts only.
     router_wrote_shared_cols = (
-        num_shared_expert_columns > 0 and topk_ids.shape[-1] == topk_config.top_k
+        num_shared_topk_slots > 0 and topk_ids.shape[-1] == topk_config.top_k
     )
     # The router already wrote the aiter shared columns (see _aiter_append below).
     _gate_appended = (
         router_wrote_shared_cols and _use_aiter and not use_per_rank_shared_slots
     )
     routed_topk_ids = (
-        topk_ids[:, :-num_shared_expert_columns] if _gate_appended else topk_ids
+        topk_ids[:, :-num_shared_topk_slots] if _gate_appended else topk_ids
     )
     capture_routed_experts_if_allowed(topk_config, layer_id, routed_topk_ids)
     recorder_topk_ids = None
     _aiter_append = (
-        num_shared_expert_columns > 0
+        num_shared_topk_slots > 0
         and _use_aiter
         and topk_ids.shape[-1] < topk_config.top_k
     )
@@ -2380,8 +2378,8 @@ def _post_process_topk_ids(
         elif router_wrote_shared_cols:
             # Shared IDs are outside EPLB's routed-expert table for both global
             # and per-rank layouts, so remap only routed columns.
-            shared_cols = topk_ids[:, -num_shared_expert_columns:]
-            routed_cols = topk_ids[:, :-num_shared_expert_columns]
+            shared_cols = topk_ids[:, -num_shared_topk_slots:]
+            routed_cols = topk_ids[:, :-num_shared_topk_slots]
             routed_cols = _biased_grouped_topk_postprocess(
                 routed_cols, expert_location_dispatch_info, num_token_non_padded
             )
@@ -2458,7 +2456,7 @@ def _post_process_topk_ids(
 
     if recorder_topk_ids is None and not recorder_was_fused:
         recorder_topk_ids = (
-            topk_ids[:, :-num_shared_expert_columns] if _gate_appended else topk_ids
+            topk_ids[:, :-num_shared_topk_slots] if _gate_appended else topk_ids
         )
 
     if _aiter_append and use_per_rank_shared_slots:
@@ -2475,7 +2473,7 @@ def _post_process_topk_ids(
         ep_size = get_parallel().moe_ep_size
         ep_rank = get_parallel().moe_ep_rank
         num_local_routed = num_physical_routed_experts // ep_size
-        num_local_experts = num_local_routed + num_shared_expert_columns
+        num_local_experts = num_local_routed + num_shared_topk_slots
         shared_id_base = ep_rank * num_local_experts + num_local_routed
 
         # Lazy import to avoid circular-import issues
@@ -2486,7 +2484,7 @@ def _post_process_topk_ids(
         topk_ids, topk_weights = fused_append_remap_shared_experts_deepep(
             topk_ids,
             topk_weights,
-            num_shared_expert_columns,
+            num_shared_topk_slots,
             fused_shared_expert_weight(
                 routed_scaling_factor=topk_config.routed_scaling_factor,
                 fused_in_topk=is_routed_scaling_factor_fused_in_topk(topk_config),
@@ -2513,7 +2511,7 @@ def _post_process_topk_ids(
         topk_ids, topk_weights = fused_append_shared_experts(
             topk_ids,
             topk_weights,
-            num_shared_expert_columns,
+            num_shared_topk_slots,
             scale_factor,
             N,  # base id for shared experts
             num_token_non_padded=(
@@ -2531,27 +2529,22 @@ def _post_process_topk_ids(
         )
         if router_wrote_shared_cols:
             # Placeholders; the remap appends the real shared columns.
-            topk_ids = topk_ids[:, :-num_shared_expert_columns]
-            topk_weights = topk_weights[:, :-num_shared_expert_columns]
+            topk_ids = topk_ids[:, :-num_shared_topk_slots]
+            topk_weights = topk_weights[:, :-num_shared_topk_slots]
         topk_ids, topk_weights = remap_topk_for_per_rank_shared_slots(
             topk_ids,
             topk_weights,
-            num_shared_expert_columns,
+            num_shared_topk_slots,
             num_physical_routed_experts,
             topk_config,
         )
         if _is_cuda:
             # The remap shifts a padded row's -1 and gives it a live shared slot.
             _mask_topk_ids_padded_region(topk_ids, num_token_non_padded)
-    elif (
-        num_shared_expert_columns > 0
-        and fused_shared_experts_scaling_factor is not None
-    ):
+    elif num_shared_topk_slots > 0 and fused_shared_experts_scaling_factor is not None:
         # Standard EP all-reduces the per-rank shared-expert outputs; without the
         # supplied 1/ep_size factor the shared contribution is summed ep_size times.
-        topk_weights[:, -num_shared_expert_columns:] *= (
-            fused_shared_experts_scaling_factor
-        )
+        topk_weights[:, -num_shared_topk_slots:] *= fused_shared_experts_scaling_factor
 
     if _is_hip and not _skip_hip_pad_mask and not _fold_pad_weights_into_append:
         # Shared-expert append/remap can introduce non-zero weights after the
@@ -2578,7 +2571,7 @@ def select_experts(
     topk_group = topk_config.topk_group
     num_expert_group = topk_config.num_expert_group
     renormalize = topk_config.renormalize
-    num_shared_expert_columns = topk_config.num_shared_expert_columns
+    num_shared_topk_slots = topk_config.num_shared_topk_slots
     custom_routing_function = topk_config.custom_routing_function
     correction_bias = (
         topk_config.correction_bias
@@ -2615,8 +2608,8 @@ def select_experts(
         and not torch_native
         and expert_location_dispatch_info is None
         and (
-            num_shared_expert_columns == 0
-            or has_per_rank_fused_shared_slots(num_shared_expert_columns)
+            num_shared_topk_slots == 0
+            or has_per_rank_fused_shared_slots(num_shared_topk_slots)
             or not is_expert_remapping_enabled()
         )
     ):
@@ -2645,15 +2638,15 @@ def select_experts(
     ):
         correction_bias = topk_config.correction_bias_for_dtype(router_logits.dtype)
 
-    num_routed_topk = top_k - num_shared_expert_columns
+    num_routed_topk = top_k - num_shared_topk_slots
     # On aiter and on the per-rank shared-slot path, _post_process_topk_ids appends
     # the shared columns, so the router selects and renormalizes routed experts only.
-    if _use_aiter or has_per_rank_fused_shared_slots(num_shared_expert_columns):
+    if _use_aiter or has_per_rank_fused_shared_slots(num_shared_topk_slots):
         top_k_for_gate = num_routed_topk
-        num_shared_expert_columns_for_gate = 0
+        num_shared_topk_slots_for_gate = 0
     else:
         top_k_for_gate = top_k
-        num_shared_expert_columns_for_gate = num_shared_expert_columns
+        num_shared_topk_slots_for_gate = num_shared_topk_slots
     if dynamic_expert_bias is not None:
         if scoring_func != "sigmoid":
             raise ValueError(
@@ -2667,7 +2660,7 @@ def select_experts(
             renormalize=renormalize,
             num_expert_group=num_expert_group or 1,
             topk_group=topk_group or 1,
-            num_fused_shared_experts=num_shared_expert_columns,
+            num_fused_shared_experts=num_shared_topk_slots,
             routed_scaling_factor=routed_scaling_factor,
             apply_routed_scaling_factor_on_output=apply_routed_scaling_factor_on_output,
         )
@@ -2682,7 +2675,7 @@ def select_experts(
                 renormalize=renormalize,
                 num_expert_group=num_expert_group,
                 topk_group=topk_group,
-                num_fused_shared_experts=num_shared_expert_columns_for_gate,
+                num_fused_shared_experts=num_shared_topk_slots_for_gate,
                 routed_scaling_factor=routed_scaling_factor,
                 apply_routed_scaling_factor_on_output=apply_routed_scaling_factor_on_output,
                 scoring_func=scoring_func,
@@ -2696,7 +2689,7 @@ def select_experts(
                 renormalize=renormalize,
                 num_expert_group=num_expert_group,
                 topk_group=topk_group,
-                num_fused_shared_experts=num_shared_expert_columns_for_gate,
+                num_fused_shared_experts=num_shared_topk_slots_for_gate,
                 routed_scaling_factor=routed_scaling_factor,
                 apply_routed_scaling_factor_on_output=apply_routed_scaling_factor_on_output,
             )
@@ -2728,7 +2721,7 @@ def select_experts(
             _packed_kwargs = {}
             if _fused_gate_emits_packed_ids(
                 scoring_func,
-                num_shared_expert_columns,
+                num_shared_topk_slots,
                 expert_location_dispatch_info,
                 routing_overridden,
                 topk_config.fused_gate_packed_ids,
@@ -2745,11 +2738,11 @@ def select_experts(
                 _packed_kwargs["router_logits_partials"] = router_logits_partials
                 if (
                     _use_aiter
-                    and num_shared_expert_columns > 0
-                    and not has_per_rank_fused_shared_slots(num_shared_expert_columns)
+                    and num_shared_topk_slots > 0
+                    and not has_per_rank_fused_shared_slots(num_shared_topk_slots)
                 ):
                     # the ROCm decode gate writes the aiter shared columns itself
-                    _packed_kwargs["num_shared_append"] = num_shared_expert_columns
+                    _packed_kwargs["num_shared_append"] = num_shared_topk_slots
             topk_weights, topk_ids = _biased_topk(
                 hidden_states=hidden_states,
                 gating_output=router_logits,
@@ -2757,7 +2750,7 @@ def select_experts(
                 topk=top_k_for_gate,
                 renormalize=renormalize,
                 scoring_func=scoring_func,
-                num_fused_shared_experts=num_shared_expert_columns_for_gate,
+                num_fused_shared_experts=num_shared_topk_slots_for_gate,
                 routed_scaling_factor=routed_scaling_factor,
                 num_token_non_padded=num_token_non_padded,
                 expert_location_dispatch_info=expert_location_dispatch_info,
@@ -2792,7 +2785,7 @@ def select_experts(
                 and scoring_func == "softmax"
                 and correction_bias is None
                 and expert_location_dispatch_info is None
-                and num_shared_expert_columns == 0
+                and num_shared_topk_slots == 0
                 and not routing_overridden
             ):
                 num_experts = router_logits.shape[-1]
@@ -2821,7 +2814,7 @@ def select_experts(
                 renormalize=renormalize,
                 correction_bias=correction_bias,
                 scoring_func=scoring_func,
-                num_fused_shared_experts=num_shared_expert_columns_for_gate,
+                num_fused_shared_experts=num_shared_topk_slots_for_gate,
                 routed_scaling_factor=routed_scaling_factor,
                 apply_routed_scaling_factor_on_output=apply_routed_scaling_factor_on_output,
                 **_fused_topk_kwargs,
@@ -2922,7 +2915,7 @@ def precomputed_topk_postprocess_is_noop(
     """
     return (
         _is_cuda
-        and topk_config.num_shared_expert_columns == 0
+        and topk_config.num_shared_topk_slots == 0
         and num_token_non_padded is None
         and expert_location_dispatch_info is None
         and not envs.SGLANG_SIMULATE_UNIFORM_EXPERTS.get()

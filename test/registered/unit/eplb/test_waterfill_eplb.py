@@ -63,7 +63,7 @@ class TestWaterfillEPLB(CustomTestCase):
         topk_weights = torch.ones_like(topk_ids, dtype=torch.float32)
         topk_config = TopKConfig(
             top_k=4,
-            num_shared_expert_columns=1,
+            num_shared_topk_slots=1,
             routed_scaling_factor=1.0,
         )
         dispatch_info = SimpleNamespace(
@@ -108,7 +108,7 @@ class TestWaterfillEPLB(CustomTestCase):
         topk_weights = torch.ones_like(topk_ids, dtype=torch.float32)
         topk_config = TopKConfig(
             top_k=4,
-            num_shared_expert_columns=1,
+            num_shared_topk_slots=1,
             routed_scaling_factor=1.0,
         )
         dispatch_info = SimpleNamespace(
@@ -151,7 +151,7 @@ class TestWaterfillEPLB(CustomTestCase):
         topk_weights = torch.ones_like(topk_ids, dtype=torch.float32)
         topk_config = TopKConfig(
             top_k=4,
-            num_shared_expert_columns=1,
+            num_shared_topk_slots=1,
             routed_scaling_factor=1.0,
         )
         dispatch_info = SimpleNamespace(
@@ -215,9 +215,9 @@ class TestWaterfillEPLB(CustomTestCase):
                     (
                         topk,
                         topk.topk_config.top_k,
-                        topk.topk_config.num_shared_expert_columns,
+                        topk.topk_config.num_shared_topk_slots,
                     ),
-                    (hash_topk, hash_topk.topk, hash_topk.num_shared_expert_columns),
+                    (hash_topk, hash_topk.topk, hash_topk.num_shared_topk_slots),
                 ):
                     self.assertEqual(layer.enable_waterfill, enable_waterfill)
                     self.assertEqual(
@@ -232,7 +232,7 @@ class TestWaterfillEPLB(CustomTestCase):
 
                 self.assertFalse(unfused_topk.enable_waterfill)
                 self.assertEqual(unfused_topk.topk_config.top_k, 8)
-                self.assertEqual(unfused_topk.topk_config.num_shared_expert_columns, 0)
+                self.assertEqual(unfused_topk.topk_config.num_shared_topk_slots, 0)
 
 
 if __name__ == "__main__":
