@@ -568,7 +568,8 @@ class MoeFlags(_FlagGroupBase):
     speculative_disable_shared_experts_fusion: bool | None = None
     # Lifecycle marker (the capture.disable_dispose_tensor family): set while
     # draft_model_build_scope is active, so a draft's decision also lands on the
-    # speculative leaf.
+    # speculative leaf; draft builds also read it to skip target-only setup
+    # (the CuTe DSL fusion and its workspace, expert remap, bypassed top-k).
     in_speculative_scope: bool = False
     # Draft construction/execution uses a separate one-sided A2A workspace from
     # the target model's concurrently live CUDA graphs.
