@@ -168,6 +168,7 @@ def _load_standard_dispatcher(get_parallel, get_backend):
         "MoeRunnerConfig": object,
         "get_parallel": get_parallel,
         "get_moe_runner_backend": get_backend,
+        "get_lora": lambda: types.SimpleNamespace(enable_lora=False),
         "_use_aiter": False,
         "get_moe_a2a_backend": lambda: types.SimpleNamespace(
             supports_aiter=lambda: False
@@ -175,7 +176,20 @@ def _load_standard_dispatcher(get_parallel, get_backend):
     }
     exec(
         compile(
-            ast.fix_missing_locations(ast.Module(body=[test_class], type_ignores=[])),
+            ast.fix_missing_locations(
+                ast.Module(
+                    body=[
+                        next(
+                            n
+                            for n in tree.body
+                            if isinstance(n, ast.FunctionDef)
+                            and n.name == "_keeps_global_expert_ids"
+                        ),
+                        test_class,
+                    ],
+                    type_ignores=[],
+                )
+            ),
             str(STANDARD_DISPATCHER_PATH),
             "exec",
         ),
@@ -935,6 +949,7 @@ class TestModuleLevelHelpers(unittest.TestCase):
         moe_utils.get_moe_runner_backend = lambda: state.backend
         for backend in backends:
             state.backend = backend
+            config.runner_backend = backend
             with mock.patch.dict(
                 "sys.modules", {"sglang.srt.layers.moe.utils": moe_utils}
             ):

@@ -792,6 +792,7 @@ class DeepseekV2MoE(nn.Module):
                     ),
                 )
             self.topk = TopK(**topk_kwargs)
+            self.topk.bind_runner_backend(self.experts.runner_backend)
 
         self.shared_experts_is_int8 = False
         self.shared_experts_is_fp8 = False

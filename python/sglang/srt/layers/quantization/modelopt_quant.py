@@ -3064,6 +3064,7 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
         self._moe_runner_backend = moe_runner_backend
 
         if get_moe_a2a_backend().is_megamoe():
+            moe_runner_config.runner_backend = moe_runner_backend
             # FusedMoE.forward is never reached under megamoe.
             self.runner = None
             return
