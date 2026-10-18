@@ -202,7 +202,7 @@ if _is_cuda:
             scaling_factor: float,
             topk_weights: torch.Tensor,
             topk_ids: torch.Tensor,
-            renormalize: bool,
+            launch_with_pdl: bool,
         ) -> None:
             _fused_topk_deepseek(
                 gating_output,
@@ -213,7 +213,7 @@ if _is_cuda:
                 scaling_factor,
                 topk_weights,
                 topk_ids,
-                renormalize,
+                launch_with_pdl,
             )
 
     except ImportError:
@@ -1821,8 +1821,9 @@ def biased_grouped_topk_gpu(
         # The kernel wants the total width; off aiter, topk already counts the
         # num_fused_shared_experts slots it writes.
         #
-        # Fold whenever the steps after top-k assume a fold, which on aiter they
-        # always do, whether or not this call is given the shared slots.
+        # On aiter this route folds whatever the flag says, as
+        # aiter_biased_grouped_topk does and is_routed_scaling_factor_fused_in_topk
+        # assumes, whether or not this call is given the shared slots.
         return jit_grouped_gate(
             gating_output,
             correction_bias.to(dtype=torch.float32),
@@ -1833,8 +1834,8 @@ def biased_grouped_topk_gpu(
             routed_scaling_factor=(
                 routed_scaling_factor if routed_scaling_factor is not None else 1.0
             ),
-            apply_routed_scaling_factor_on_output=is_routed_scaling_factor_fused_in_topk(
-                apply_routed_scaling_factor_on_output
+            apply_routed_scaling_factor_on_output=(
+                _use_aiter or bool(apply_routed_scaling_factor_on_output)
             ),
             num_expert_group=num_expert_group,
             topk_group=topk_group,
@@ -1842,6 +1843,8 @@ def biased_grouped_topk_gpu(
     if (
         _is_cuda
         and fused_topk_deepseek is not None
+        # flashinfer always renormalizes the selected weights
+        and renormalize
         and is_power_of_two(num_experts)
         # flashinfer constraints (applied to routed experts only)
         and topk_routed <= 8
@@ -1877,21 +1880,21 @@ def biased_grouped_topk_gpu(
             scaling_factor,
             topk_weights,
             topk_ids,
-            True,
+            launch_with_pdl=True,
         )
 
         if num_fused_shared_experts > 0:
-            # Append shared expert columns: ID = num_experts (first shared slot),
-            # weight = sum(routed) / scaling_factor (matching biased_grouped_topk_impl).
-            # For DeepEP/MegaMOE per-rank shared-slot layout, post-process remaps
-            # this placeholder ID and overwrites the shared weight for the active scaling path.
+            # Append the global shared columns: ID = num_experts (first shared slot).
+            # On CUDA the routed weights carry the factor exactly when asked to.
             topk_ids = F.pad(topk_ids, (0, num_fused_shared_experts), value=num_experts)
-            topk_weights = F.pad(topk_weights, (0, num_fused_shared_experts))
-            if routed_scaling_factor is not None:
-                topk_weights[:, topk_routed:] = (
-                    topk_weights[:, :topk_routed].sum(dim=-1, keepdim=True)
-                    / routed_scaling_factor
-                )
+            topk_weights = F.pad(
+                topk_weights,
+                (0, num_fused_shared_experts),
+                value=fused_shared_expert_weight(
+                    routed_scaling_factor=routed_scaling_factor,
+                    fused_in_topk=bool(apply_routed_scaling_factor_on_output),
+                ),
+            )
 
         return topk_weights, topk_ids
 
@@ -2212,28 +2215,36 @@ else:
     fused_topk_native = fused_topk_torch_native
 
 
-def is_routed_scaling_factor_fused_in_topk(
-    apply_routed_scaling_factor_on_output: bool,
-) -> bool:
-    """Whether the routed top-k weights already carry routed_scaling_factor.
+def is_routed_scaling_factor_fused_in_topk(topk_config: TopKConfig) -> bool:
+    """Whether the routed weights a TopK with this config emits already carry
+    routed_scaling_factor.
 
     When true, no step after top-k may apply the factor again, and a fused
-    shared expert's weight must not compensate for it.
+    shared expert's weight must not compensate for it. HashTopK routing folds
+    the factor only when its own flag asks for it.
     """
-    # aiter_biased_grouped_topk folds the factor whatever the flag says.
-    return bool(apply_routed_scaling_factor_on_output) or _use_aiter
+    if topk_config.apply_routed_scaling_factor_on_output:
+        return True
+    if not _use_aiter:
+        return False
+    # Two aiter routes fold the factor whatever the flag says: grouped routing with
+    # a correction bias (aiter_biased_grouped_topk, or the unified Triton router),
+    # and ungrouped sqrtsoftplus routing (aiter topk_gating, or rocm_router_gate).
+    # Grouped routing without a bias and the other ungrouped routes do not.
+    if topk_config.use_grouped_topk:
+        return topk_config.correction_bias is not None
+    return (
+        topk_config.scoring_func == "sqrtsoftplus"
+        and topk_config.custom_routing_function is None
+    )
 
 
 def fused_shared_expert_weight(
-    *,
-    routed_scaling_factor: Optional[float],
-    apply_routed_scaling_factor_on_output: bool,
+    *, routed_scaling_factor: Optional[float], fused_in_topk: bool
 ) -> float:
-    """Top-k weight that makes a fused shared expert's output count exactly once."""
-    if (
-        is_routed_scaling_factor_fused_in_topk(apply_routed_scaling_factor_on_output)
-        or not routed_scaling_factor
-    ):
+    """Top-k weight that makes a fused shared expert's output count exactly once;
+    fused_in_topk is is_routed_scaling_factor_fused_in_topk's answer."""
+    if fused_in_topk or not routed_scaling_factor:
         return 1.0
     # The routed output, shared column included, is scaled by the factor later.
     return 1.0 / routed_scaling_factor
@@ -2285,7 +2296,7 @@ def remap_topk_for_per_rank_shared_slots(
         (num_tokens, num_fused_shared_experts),
         fused_shared_expert_weight(
             routed_scaling_factor=topk_config.routed_scaling_factor,
-            apply_routed_scaling_factor_on_output=topk_config.apply_routed_scaling_factor_on_output,
+            fused_in_topk=is_routed_scaling_factor_fused_in_topk(topk_config),
         ),
     )
 
@@ -2483,7 +2494,7 @@ def _post_process_topk_ids(
             num_shared_expert_columns,
             fused_shared_expert_weight(
                 routed_scaling_factor=topk_config.routed_scaling_factor,
-                apply_routed_scaling_factor_on_output=topk_config.apply_routed_scaling_factor_on_output,
+                fused_in_topk=is_routed_scaling_factor_fused_in_topk(topk_config),
             ),
             shared_id_base,
             num_local_routed,
@@ -2534,6 +2545,9 @@ def _post_process_topk_ids(
             num_physical_routed_experts,
             topk_config,
         )
+        if _is_cuda:
+            # The remap shifts a padded row's -1 and gives it a live shared slot.
+            _mask_topk_ids_padded_region(topk_ids, num_token_non_padded)
     elif (
         num_shared_expert_columns > 0
         and fused_shared_experts_scaling_factor is not None
