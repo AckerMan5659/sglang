@@ -3648,8 +3648,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.mamba_track_seqlens_cpu = None
         self.mamba_prefill_track_mask_cpu = None
         # Decode embeds the last output token via embed_tokens; clear the stale
-        # prefill-time tensor so it doesn't leak into ForwardBatch.
+        # prefill-time tensors so they don't leak into ForwardBatch.
         self.input_embeds = None
+        self.replace_embeds = None
+        self.replace_positions = None
 
         self.mamba_cow_src_indices = None
         self.mamba_cow_dst_indices = None
@@ -3976,7 +3978,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
     def maybe_evict_swa(self):
         if self.tree_cache.supports_swa():
-            sliding_window_size = self.tree_cache.sliding_window_size
+            retain_window = self.tree_cache.swa_retain_window
             # Auxiliary windows check their own cursors and prefix locks.
             has_auxiliary_swa = self.tree_cache.supports_auxiliary_swa()
 
@@ -3985,9 +3987,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             )
 
             eviction_interval = max(1, envs.SGLANG_SWA_EVICTION_INTERVAL.get())
-            swa_evict_due = self._swa_eviction_trigger(
-                sliding_window_size, eviction_interval
-            )
+            swa_evict_due = self._swa_eviction_trigger(retain_window, eviction_interval)
             self.token_to_kv_pool_allocator.free_group_begin()
             for idx, req in enumerate(self.reqs):
                 if self.forward_mode.is_decode():
@@ -4009,12 +4009,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                             ),
                         )
 
-                    # Past the window the request no longer reads its prefill's SWA;
-                    # release that part of the tree lock so SWA LRU can reclaim it.
-                    if (
-                        release_leaf_lock
-                        and req.decode_batch_idx >= sliding_window_size
-                    ):
+                    # Past the retain window the request no longer reads its prefill's
+                    # SWA; release that part of the tree lock so SWA LRU can reclaim it.
+                    if release_leaf_lock and req.decode_batch_idx >= retain_window:
                         self.tree_cache.release_swa_prefix_lock(req)
                 elif (
                     self.forward_mode.is_extend()
