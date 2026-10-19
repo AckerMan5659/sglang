@@ -21,6 +21,8 @@ from sglang.srt.mem_cache.allocation_sizing import (
     get_alloc_reserve_per_decode,
     page_aligned_decode_alloc_lens,
 )
+from sglang.srt.platforms import current_platform
+from sglang.srt.platforms.interface import reject_out_of_tree_path
 from sglang.srt.runtime_context import get_spec
 from sglang.srt.utils import (
     is_cpu,
@@ -275,6 +277,10 @@ def build_tree_kernel_efficient(
             tree_mask_mode,
         )
     else:
+        if not (_is_cuda or _is_hip or _is_musa):
+            reject_out_of_tree_path(
+                current_platform, subsystem="EAGLE tree construction"
+            )
         sgl_build_tree_kernel_efficient(
             parent_list,
             top_scores_index,
@@ -448,6 +454,10 @@ def verify_tree_greedy_func(
             retrieve_next_token=retrieve_next_token,
             retrieve_next_sibling=retrieve_next_sibling,
             target_predict=target_predict,
+        )
+    else:
+        reject_out_of_tree_path(
+            current_platform, subsystem="EAGLE greedy tree verification"
         )
     return predicts, accept_index, accept_token_num
 
