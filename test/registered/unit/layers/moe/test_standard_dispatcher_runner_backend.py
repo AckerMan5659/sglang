@@ -150,3 +150,9 @@ def test_fp8_triton_fallback_reaches_the_dispatcher(cutlass_pin):
     assert method.runner.runner_backend.is_triton()
     assert layer.moe_runner_config.runner_backend.is_triton()
     assert not layer.dispatcher.skip_local_expert_mapping
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))
